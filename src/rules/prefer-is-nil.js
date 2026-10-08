@@ -70,27 +70,43 @@ module.exports = {
             return (isNegationExpression(node) && checkExpression(nil, '===', node.argument)) || checkExpression(nil, '!==', node)
         }
 
-        function isEquivalentExistingExpression(node, leftNil, rightNil) {
-            const leftExp = checkExpression(leftNil, '===', node.left)
-            return leftExp && isEquivalentMemberExp(leftExp, checkExpression(rightNil, '===', node.right))
+        function getNilCheck(node, isNegated) {
+            return _(['null', 'undefined'])
+                .map(nil => ({nil, subject: isNegated ? checkNegatedExpression(nil, node) : checkExpression(nil, '===', node)}))
+                .find('subject')
         }
 
-        function isEquivalentExistingNegation(node, leftNil, rightNil) {
-            const leftExp = checkNegatedExpression(leftNil, node.left)
-            return leftExp && isEquivalentMemberExp(leftExp, checkNegatedExpression(rightNil, node.right))
+        function getOperands(node, operator) {
+            return node.type === 'LogicalExpression' && node.operator === operator ?
+                [...getOperands(node.left, operator), ...getOperands(node.right, operator)] :
+                [node]
         }
 
         const visitors = lodashContext.getImportVisitors()
         visitors.LogicalExpression = function (node) {
-            if (node.operator === '||') {
-                if (isEquivalentExistingExpression(node, 'undefined', 'null') ||
-                    isEquivalentExistingExpression(node, 'null', 'undefined')) {
-                    context.report({node, message: 'Prefer isNil over checking for undefined or null.'})
-                }
-            } else if (isEquivalentExistingNegation(node, 'undefined', 'null') ||
-                isEquivalentExistingNegation(node, 'null', 'undefined')) {
-                context.report({node, message: 'Prefer isNil over checking for undefined or null.'})
+            const {parent, operator} = node
+            if (parent.type === 'LogicalExpression' && parent.operator === operator) {
+                return
             }
+            const pending = []
+            const reported = []
+            getOperands(node, operator).forEach(operand => {
+                const check = getNilCheck(operand, operator !== '||')
+                if (!check || reported.some(subject => isEquivalentMemberExp(subject, check.subject))) {
+                    return
+                }
+                const partner = pending.find(p => p.nil !== check.nil && isEquivalentMemberExp(p.subject, check.subject))
+                if (partner) {
+                    reported.push(check.subject)
+                    context.report({
+                        node,
+                        loc: {start: partner.operand.loc.start, end: operand.loc.end},
+                        message: 'Prefer isNil over checking for undefined or null.'
+                    })
+                } else {
+                    pending.push({...check, operand})
+                }
+            })
         }
         return visitors
     }
